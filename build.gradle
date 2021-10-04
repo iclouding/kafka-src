@@ -17,8 +17,12 @@ import org.ajoberstar.grgit.Grgit
 
 buildscript {
   repositories {
-    mavenCentral()
-    jcenter()
+//    maven { url 'https://plugins.gradle.org/m2/' }
+    maven { url 'http://maven.aliyun.com/nexus/content/repositories/google' }
+    maven { url 'http://maven.aliyun.com/nexus/content/groups/public/' }
+    maven { url 'http://maven.aliyun.com/nexus/content/repositories/jcenter'}
+//    mavenCentral()
+//    jcenter()
   }
   apply from: file('gradle/buildscript.gradle'), to: buildscript
 
@@ -36,10 +40,16 @@ allprojects {
   apply plugin: "jacoco"
 
   repositories {
-    mavenCentral()
+//    maven { url 'https://plugins.gradle.org/m2/' }
+    maven { url 'http://maven.aliyun.com/nexus/content/repositories/google' }
+    maven { url 'http://maven.aliyun.com/nexus/content/groups/public/' }
+    maven { url 'http://maven.aliyun.com/nexus/content/repositories/jcenter'}
+//    mavenCentral()
   }
 
   apply plugin: 'com.github.ben-manes.versions'
+  apply plugin: 'java'
+  apply plugin: 'maven'
 
   dependencyUpdates {
     revision="release"
@@ -129,6 +139,12 @@ subprojects {
 
   uploadArchives {
     repositories {
+      maven { url 'https://plugins.gradle.org/m2/' }
+      maven { url 'http://maven.aliyun.com/nexus/content/repositories/google' }
+      maven { url 'http://maven.aliyun.com/nexus/content/groups/public/' }
+      maven { url 'http://maven.aliyun.com/nexus/content/repositories/jcenter'}
+
+      mavenCentral()
       signing {
           required { shouldSign }
           sign configurations.archives

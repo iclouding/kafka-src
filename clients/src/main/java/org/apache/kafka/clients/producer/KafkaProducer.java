@@ -206,6 +206,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private KafkaProducer(ProducerConfig config, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
         try {
             log.trace("Starting the Kafka producer");
+            // 用户自定义的参数
             Map<String, Object> userProvidedConfigs = config.originals();
             this.producerConfig = config;
             this.time = new SystemTime();
@@ -223,7 +224,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             reporters.add(new JmxReporter(JMX_PREFIX));
             this.metrics = new Metrics(metricConfig, reporters, time);
             this.partitioner = config.getConfiguredInstance(ProducerConfig.PARTITIONER_CLASS_CONFIG, Partitioner.class);
+            /**
+             * 重试时间：默认是100ms
+             */
             long retryBackoffMs = config.getLong(ProducerConfig.RETRY_BACKOFF_MS_CONFIG);
+            // key，value序列化器，有默认值
             if (keySerializer == null) {
                 this.keySerializer = config.getConfiguredInstance(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
                         Serializer.class);
@@ -243,14 +248,25 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
             // load interceptors and make sure they get clientId
             userProvidedConfigs.put(ProducerConfig.CLIENT_ID_CONFIG, clientId);
+            // 设置拦截器，可以过滤些不需要发送的消息
             List<ProducerInterceptor<K, V>> interceptorList = (List) (new ProducerConfig(userProvidedConfigs)).getConfiguredInstances(ProducerConfig.INTERCEPTOR_CLASSES_CONFIG,
                     ProducerInterceptor.class);
             this.interceptors = interceptorList.isEmpty() ? null : new ProducerInterceptors<>(interceptorList);
 
             ClusterResourceListeners clusterResourceListeners = configureClusterResourceListeners(keySerializer, valueSerializer, interceptorList, reporters);
+            /**
+             * 生产者从brokers拉取过来的kafka的元数据信息, 放在了metadata里
+             * METADATA_MAX_AGE_CONFIG(metadata.max.age.ms) 默认是5分钟，来强制更新下metadata的数据信息。
+             */
             this.metadata = new Metadata(retryBackoffMs, config.getLong(ProducerConfig.METADATA_MAX_AGE_CONFIG), true, clusterResourceListeners);
+            // MAX_REQUEST_SIZE_CONFIG(max.request.size) 生产者给服务端发消息时，默认一条消息的最大的字节数，
+            // 默认是1M，偏小。
+            // 需要调大
             this.maxRequestSize = config.getInt(ProducerConfig.MAX_REQUEST_SIZE_CONFIG);
+            // 缓存大小
+            // 默认是32M
             this.totalMemorySize = config.getLong(ProducerConfig.BUFFER_MEMORY_CONFIG);
+            // 设置压缩格式。可以在发送的时候减少空间，需要耗费更多的CPU
             this.compressionType = CompressionType.forName(config.getString(ProducerConfig.COMPRESSION_TYPE_CONFIG));
             /* check for user defined settings.
              * If the BLOCK_ON_BUFFER_FULL is set to true,we do not honor METADATA_FETCH_TIMEOUT_CONFIG.
@@ -289,6 +305,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 this.requestTimeoutMs = config.getInt(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG);
             }
 
+            // TODO 创建了一个很核心的组件 RecordAccumulator，就是发送的缓存，32M
             this.accumulator = new RecordAccumulator(config.getInt(ProducerConfig.BATCH_SIZE_CONFIG),
                     this.totalMemorySize,
                     this.compressionType,
@@ -300,6 +317,21 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(config.getList(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG));
             this.metadata.update(Cluster.bootstrap(addresses), time.milliseconds());
             ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(config.values());
+            /**
+             * NetworkClient 用来负责网络传输
+             * 1. CONNECTIONS_MAX_IDLE_MS_CONFIG(connections.max.idle.ms),默认是9分钟
+             *      一个网络连接最多空闲的时间。超过这个时间，就关机这个连接。
+             *  2. MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION(max.in.flight.requests.per.connection) 默认是5
+             *      producer 向broker发送数据时，其实有很多个网络连接，
+             *      每个链接可以接受的producer向broker 发送消息没有相应的个数
+             *
+             *      TODO Kafka有重试机制，所以会造成数据乱序，如果要保证有序，需要把这个值设置为1
+             *
+             *   3. SEND_BUFFER_CONFIG(send.buffer.bytes)  默认是 128K
+             *      socket发送数据的缓冲区大小
+             *   4. RECEIVE_BUFFER_CONFIG(receive.buffer.bytes) 默认是32K
+             *      socket接受数据的缓冲区大小
+             */
             NetworkClient client = new NetworkClient(
                     new Selector(config.getLong(ProducerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG), this.metrics, time, "producer", channelBuilder),
                     this.metadata,
@@ -309,6 +341,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     config.getInt(ProducerConfig.SEND_BUFFER_CONFIG),
                     config.getInt(ProducerConfig.RECEIVE_BUFFER_CONFIG),
                     this.requestTimeoutMs, time);
+            /**
+             * Sender 是发送数据的线程
+             */
             this.sender = new Sender(client,
                     this.metadata,
                     this.accumulator,
@@ -433,6 +468,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     public Future<RecordMetadata> send(ProducerRecord<K, V> record, Callback callback) {
         // intercept the record, which can be potentially modified; this method does not throw exceptions
         ProducerRecord<K, V> interceptedRecord = this.interceptors == null ? record : this.interceptors.onSend(record);
+        // TODO 关键代码
         return doSend(interceptedRecord, callback);
     }
 
@@ -513,6 +549,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     }
 
     /**
+     * 等待集群的元数据信息
      * Wait for cluster metadata including partitions for the given topic to be available.
      * @param topic The topic we want metadata for
      * @param partition A specific partition expected to exist in metadata, or null if there's no preference
@@ -521,24 +558,43 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      */
     private ClusterAndWaitTime waitOnMetadata(String topic, Integer partition, long maxWaitMs) throws InterruptedException {
         // add topic to metadata topic list if it is not there already and reset expiry
+        // 将当前的topic存入到元数据里面
         metadata.add(topic);
+        // fetch 只返回了空的cluster，在第一次执行时，内容为空
         Cluster cluster = metadata.fetch();
+        // 里面有topic -> partition 的映射。第一次进来是没有的
         Integer partitionsCount = cluster.partitionCountForTopic(topic);
         // Return cached metadata if we have it, and if the record's partition is either undefined
         // or within the known partition range
+        // 如果由缓存的数据，就直接返回。没有就继续。
         if (partitionsCount != null && (partition == null || partition < partitionsCount))
             return new ClusterAndWaitTime(cluster, 0);
 
         long begin = time.milliseconds();
+        // 最长等待时间
         long remainingWaitMs = maxWaitMs;
+        // 花费的时间
         long elapsed;
         // Issue metadata requests until we have metadata for the topic or maxWaitTimeMs is exceeded.
         // In case we already have cached metadata for the topic, but the requested partition is greater
         // than expected, issue an update request only once. This is necessary in case the metadata
         // is stale and the number of partitions for this topic has increased in the meantime.
+
+        // 处理获取metadata请求，直到获取到或者超时
+        // 如果我们已经缓存了metadata，当时请求的和缓存的不一致，则需要更新。
+
         do {
             log.trace("Requesting metadata update for topic {}.", topic);
+            // 1. 获取当前的元数据版本
+            // 每次获取成功一次元数据，都更新下版本。用以区分不同的元数据。
             int version = metadata.requestUpdate();
+            /**
+             * TODO wakeup
+             * 我们发现这儿去唤醒sender线程。
+             * 其实是因为，拉取有拉取元数据这个操作是有sender线程去完成的。
+             * 这个地方把线程给唤醒了以后
+             * 这个wakeup，是nio的wakeup
+             */
             sender.wakeup();
             try {
                 metadata.awaitUpdate(version, remainingWaitMs);

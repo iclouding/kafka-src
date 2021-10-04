@@ -31,8 +31,10 @@ public class Producer extends Thread {
 
     public Producer(String topic, Boolean isAsync) {
         Properties props = new Properties();
+        // 配置kafka brokers
         props.put("bootstrap.servers", "localhost:9092");
         props.put("client.id", "DemoProducer");
+        // key，value 序列化格式
         props.put("key.serializer", "org.apache.kafka.common.serialization.IntegerSerializer");
         props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
         producer = new KafkaProducer<>(props);
@@ -45,11 +47,19 @@ public class Producer extends Thread {
         while (true) {
             String messageStr = "Message_" + messageNo;
             long startTime = System.currentTimeMillis();
+            //isAsync , kafka发送数据的时候，有两种方式
+            //1: 异步发送
+            //2: 同步发送
+            //isAsync: true的时候是异步发送，false就是同步发送
             if (isAsync) { // Send asynchronously
+                //异步发送，一直发送，消息响应结果交给回调函数处理
+                //这样的方式，性能比较好，我们生产代码用的就是这种方式。
                 producer.send(new ProducerRecord<>(topic,
                     messageNo,
                     messageStr), new DemoCallBack(startTime, messageNo, messageStr));
             } else { // Send synchronously
+                //同步发送
+                //发送一条消息，等这条消息所有的后续工作都完成以后才继续下一条消息的发送。
                 try {
                     producer.send(new ProducerRecord<>(topic,
                         messageNo,
